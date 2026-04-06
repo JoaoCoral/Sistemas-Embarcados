@@ -1,0 +1,184 @@
+const int pin_botaoA = 2;
+const int pin_botaoB = 3;
+const int pin_LED1 = 8;
+const int pin_LED2 = 9;
+const int pin_LED3 = 10;
+const int pin_LED4 = 11;
+
+int lastButtonStateA = HIGH;
+int buttonStateA;
+int buttonStateB;
+unsigned long lastDebounceTimeA = 0;
+int lastButtonStateB = HIGH;
+unsigned long lastDebounceTimeB = 0;
+unsigned long debounceDelay = 50;
+
+int conta = 0;
+
+void setup() {
+  pinMode(pin_botaoA, INPUT_PULLUP);
+  pinMode(pin_botaoB, INPUT_PULLUP);
+  pinMode(pin_LED1, OUTPUT);
+  pinMode(pin_LED2, OUTPUT);
+  pinMode(pin_LED3, OUTPUT);
+  pinMode(pin_LED4, OUTPUT);
+  Serial.begin(9600);
+}
+
+void loop() {
+int readingA = digitalRead(pin_botaoA);
+  if (readingA != lastButtonStateA) {
+    lastDebounceTimeA = millis();
+  }
+  if ((millis() - lastDebounceTimeA) > debounceDelay) {
+
+    if (readingA != buttonStateA) {
+      buttonStateA = readingA;
+
+      if (buttonStateA == LOW) {
+        conta++;
+      }
+    }
+  }
+  lastButtonStateA = readingA;
+  int readingB = digitalRead(pin_botaoB);
+  if (readingB != lastButtonStateB) {
+    lastDebounceTimeB = millis();
+  }
+  if ((millis() - lastDebounceTimeB) > debounceDelay) {
+
+    if (readingB != buttonStateB) {
+      buttonStateB = readingB;
+
+      if (buttonStateB == LOW) {
+        conta--;
+      }
+    }
+  }
+  lastButtonStateB = readingB;
+
+  if (conta > 15) {
+    conta = 15;
+  }
+  if (conta < 0) {
+    conta = 0;
+  }
+
+  switch (conta) {
+    case 0: {
+      digitalWrite(pin_LED1, 0);
+      digitalWrite(pin_LED2, 0);
+      digitalWrite(pin_LED3, 0);
+      digitalWrite(pin_LED4, 0);
+      break;
+    }
+    case 1: {
+      digitalWrite(pin_LED1, 1);
+      digitalWrite(pin_LED2, 0);
+      digitalWrite(pin_LED3, 0);
+      digitalWrite(pin_LED4, 0);
+      break;
+    }
+    case 2: {
+      digitalWrite(pin_LED1, 0);
+      digitalWrite(pin_LED2, 1);
+      digitalWrite(pin_LED3, 0);
+      digitalWrite(pin_LED4, 0);
+      break;
+    }
+    case 3: {
+      digitalWrite(pin_LED1, 1);
+      digitalWrite(pin_LED2, 1);
+      digitalWrite(pin_LED3, 0);
+      digitalWrite(pin_LED4, 0);
+      break;
+    }
+    case 4: {
+      digitalWrite(pin_LED1, 0);
+      digitalWrite(pin_LED2, 0);
+      digitalWrite(pin_LED3, 1);
+      digitalWrite(pin_LED4, 0);
+      break;
+    }
+    case 5: {
+      digitalWrite(pin_LED1, 1);
+      digitalWrite(pin_LED2, 0);
+      digitalWrite(pin_LED3, 1);
+      digitalWrite(pin_LED4, 0);
+      break;
+    }
+    case 6: {
+      digitalWrite(pin_LED1, 0);
+      digitalWrite(pin_LED2, 1);
+      digitalWrite(pin_LED3, 1);
+      digitalWrite(pin_LED4, 0);
+      break;
+    }
+    case 7: {
+      digitalWrite(pin_LED1, 1);
+      digitalWrite(pin_LED2, 1);
+      digitalWrite(pin_LED3, 1);
+      digitalWrite(pin_LED4, 0);
+      break;
+    }
+    case 8: {
+      digitalWrite(pin_LED1, 0);
+      digitalWrite(pin_LED2, 0);
+      digitalWrite(pin_LED3, 0);
+      digitalWrite(pin_LED4, 1);
+      break;
+    }
+    case 9: {
+      digitalWrite(pin_LED1, 1);
+      digitalWrite(pin_LED2, 0);
+      digitalWrite(pin_LED3, 0);
+      digitalWrite(pin_LED4, 1);
+      break;
+    }
+    case 10: {
+      digitalWrite(pin_LED1, 0);
+      digitalWrite(pin_LED2, 1);
+      digitalWrite(pin_LED3, 0);
+      digitalWrite(pin_LED4, 1);
+      break;
+    }
+    case 11: {
+      digitalWrite(pin_LED1, 1);
+      digitalWrite(pin_LED2, 1);
+      digitalWrite(pin_LED3, 0);
+      digitalWrite(pin_LED4, 1);
+      break;
+    }
+    case 12: {
+      digitalWrite(pin_LED1, 0);
+      digitalWrite(pin_LED2, 0);
+      digitalWrite(pin_LED3, 1);
+      digitalWrite(pin_LED4, 1);
+      break;
+    }
+    case 13: {
+      digitalWrite(pin_LED1, 1);
+      digitalWrite(pin_LED2, 0);
+      digitalWrite(pin_LED3, 1);
+      digitalWrite(pin_LED4, 1);
+      break;
+    }
+    case 14: {
+      digitalWrite(pin_LED1, 0);
+      digitalWrite(pin_LED2, 1);
+      digitalWrite(pin_LED3, 1);
+      digitalWrite(pin_LED4, 1);
+      break;
+    }
+    case 15: {
+      digitalWrite(pin_LED1, 1);
+      digitalWrite(pin_LED2, 1);
+      digitalWrite(pin_LED3, 1);
+      digitalWrite(pin_LED4, 1);
+      break;
+    }
+  }
+
+  Serial.print("Contagem = ");
+  Serial.println(conta);
+}
