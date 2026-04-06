@@ -1,0 +1,15 @@
+const int led = 13;
+const int botao = 2;
+
+void setup() {
+  pinMode(led, OUTPUT);
+  pinMode(botao, INPUT_PULLUP);
+}
+
+void loop() {
+  if (digitalRead(botao) == LOW) { // pressionado
+    digitalWrite(led, HIGH);
+  } else {
+    digitalWrite(led, LOW);
+  }
+}
