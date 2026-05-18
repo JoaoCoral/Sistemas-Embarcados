@@ -1,0 +1,372 @@
+# Controle Automático de Planta de Nível — C++ puro
+
+```cpp
+#include <Arduino.h>
+
+// ============================================================
+//   CONTROLE AUTOMÁTICO DE PLANTA DE NÍVEL
+//   Linguagem: C++ puro com Arduino.h
+//   Hardware: HC-SR04, 4 LEDs, 2 botões, 1 potenciômetro
+// ============================================================
+
+// ============================================================
+//   DEFINIÇÃO DOS PINOS
+// ============================================================
+
+const uint8_t TRIG_PIN        = 2;   // Pino TRIG do sensor ultrassônico
+const uint8_t ECHO_PIN        = 3;   // Pino ECHO do sensor ultrassônico
+const uint8_t BOTAO_A         = 18;  // Botão A - desliga alarme vermelho (INT5)
+const uint8_t BOTAO_B         = 19;  // Botão B - sinal lógico do aquecedor
+const uint8_t POT_PIN         = A0;  // Potenciômetro de temperatura
+const uint8_t LED_ENTRADA     = 4;   // LED indica válvula de entrada aberta
+const uint8_t LED_SAIDA       = 5;   // LED indica válvula de saída aberta
+const uint8_t LED_AMARELO     = 6;   // Alarme visual: nível abaixo de 20%
+const uint8_t LED_VERMELHO    = 7;   // Alarme visual: nível abaixo de 10%
+const uint8_t VALVULA_ENTRADA = 8;   // Saída digital para eletroválvula de entrada
+const uint8_t VALVULA_SAIDA   = 9;   // Saída digital para eletroválvula de saída
+const uint8_t AQUECEDOR       = 10;  // Saída digital para elemento de aquecimento
+
+// ============================================================
+//   CONSTANTES DO SISTEMA
+// ============================================================
+
+// Tanque cilíndrico: Volume = 2π m³, diâmetro = 2m
+// π * r² * h = 2π  →  1² * h = 2  →  h = 2 metros
+const float ALTURA_MAX_CM     = 200.0f; // Altura total do tanque em cm
+const float TEMP_MIN          = 0.0f;   // Temperatura mínima do potenciômetro (0V)
+const float TEMP_MAX          = 50.0f;  // Temperatura máxima do potenciômetro (5V)
+const float TEMP_OK_MIN       = 25.0f;  // Temperatura mínima para liberar saída
+const float TEMP_OK_MAX       = 27.0f;  // Temperatura máxima para liberar saída
+const float NIVEL_SAIDA_MIN   = 40.0f;  // Nível mínimo para abrir saída (%)
+const float NIVEL_AQUECEDOR   = 10.0f;  // Nível mínimo para ligar aquecedor (%)
+const float NIVEL_LED_AMARELO = 20.0f;  // Limite para acender LED amarelo (%)
+const float NIVEL_LED_VERMELHO= 10.0f;  // Limite para acender LED vermelho (%)
+
+// Intervalos de leitura com millis() — sem uso de delay()
+const unsigned long INTERVALO_SENSOR = 100UL; // Lê sensor a cada 100ms
+const unsigned long INTERVALO_TEMP   = 200UL; // Lê temperatura a cada 200ms
+
+// ============================================================
+//   ESTRUTURA DE ESTADO DO SISTEMA
+// ============================================================
+
+// Agrupa todas as variáveis de estado em uma struct
+// Facilita leitura, manutenção e expansão do código
+struct EstadoSistema {
+    float nivelPercent;           // Nível atual do tanque (0% a 100%)
+    float tempAtual;              // Temperatura atual lida (°C)
+    bool  alarmeVermelho;         // true = alarme vermelho ativo
+    unsigned long tUltimoSensor;  // Timestamp da última leitura do sensor
+    unsigned long tUltimaTemp;    // Timestamp da última leitura de temperatura
+};
+
+// ============================================================
+//   VARIÁVEL GLOBAL DE ESTADO
+// ============================================================
+
+EstadoSistema sistema = {
+    0.0f,   // nivelPercent começa em 0
+    0.0f,   // tempAtual começa em 0
+    false,  // alarmeVermelho começa desligado
+    0UL,    // tUltimoSensor começa em 0
+    0UL     // tUltimaTemp começa em 0
+};
+
+// Flag volátil para uso na rotina de interrupção (ISR)
+// volatile garante que o compilador não otimize esta variável
+volatile bool flagBotaoA = false;
+
+// ============================================================
+//   ROTINA DE INTERRUPÇÃO - Botão A
+// ============================================================
+
+// ISR = Interrupt Service Routine
+// Executada automaticamente ao detectar borda de descida no pino 18
+// Deve ser a mais curta possível — apenas seta a flag
+void ISR_botaoA() {
+    flagBotaoA = true; // Sinaliza que botão A foi pressionado
+}
+
+// ============================================================
+//   CLASSE: SensorUltrassonico
+//   Encapsula a leitura do HC-SR04
+// ============================================================
+
+class SensorUltrassonico {
+private:
+    uint8_t _trig; // Pino TRIG
+    uint8_t _echo; // Pino ECHO
+
+public:
+    // Construtor: recebe os pinos no momento de criação do objeto
+    SensorUltrassonico(uint8_t trig, uint8_t echo)
+        : _trig(trig), _echo(echo) {}
+
+    // Inicializa os pinos do sensor
+    void inicializar() {
+        pinMode(_trig, OUTPUT); // TRIG é saída (envia pulso)
+        pinMode(_echo, INPUT);  // ECHO é entrada (recebe retorno)
+    }
+
+    // Realiza uma medição e retorna a distância em centímetros
+    float lerDistanciaCm() const {
+        // Garante nível baixo antes de disparar
+        digitalWrite(_trig, LOW);
+        delayMicroseconds(2);
+
+        // Pulso de 10 microssegundos inicia a medição
+        digitalWrite(_trig, HIGH);
+        delayMicroseconds(10);
+        digitalWrite(_trig, LOW);
+
+        // Mede duração do pulso de retorno no ECHO (timeout 30ms)
+        const long duracao = pulseIn(_echo, HIGH, 30000UL);
+
+        // Converte tempo para distância
+        // Velocidade do som ≈ 0,0343 cm/µs — divide por 2 (ida e volta)
+        return (duracao * 0.0343f) / 2.0f;
+    }
+
+    // Converte distância medida em nível percentual do tanque
+    // Sensor no topo: distância pequena = cheio, grande = vazio
+    float calcularNivel(float distanciaCm) const {
+        // Limita o valor ao intervalo físico do tanque
+        if (distanciaCm < 0.0f)          distanciaCm = 0.0f;
+        if (distanciaCm > ALTURA_MAX_CM) distanciaCm = ALTURA_MAX_CM;
+
+        // Nível (%) = (1 - dist/altura_max) × 100
+        return (1.0f - (distanciaCm / ALTURA_MAX_CM)) * 100.0f;
+    }
+};
+
+// ============================================================
+//   CLASSE: SensorTemperatura
+//   Encapsula a leitura do potenciômetro como sensor de temperatura
+// ============================================================
+
+class SensorTemperatura {
+private:
+    uint8_t _pino; // Pino analógico do potenciômetro
+
+public:
+    // Construtor: recebe o pino analógico
+    explicit SensorTemperatura(uint8_t pino) : _pino(pino) {}
+
+    // Lê o potenciômetro e retorna temperatura em °C
+    // Mapeamento: 0V (ADC=0) → 0°C, 5V (ADC=1023) → 50°C
+    float lerTemperatura() const {
+        const int leituraADC = analogRead(_pino); // Lê valor 0 a 1023
+
+        // Conversão linear: temp = (leitura / 1023) × (TEMP_MAX - TEMP_MIN)
+        return (static_cast<float>(leituraADC) / 1023.0f)
+               * (TEMP_MAX - TEMP_MIN) + TEMP_MIN;
+    }
+};
+
+// ============================================================
+//   CLASSE: Atuador
+//   Representa qualquer saída digital (válvula, LED, aquecedor)
+// ============================================================
+
+class Atuador {
+private:
+    uint8_t _pino;   // Pino digital do atuador
+    bool    _estado; // Estado atual: true = ligado, false = desligado
+
+public:
+    // Construtor: recebe o pino do atuador
+    explicit Atuador(uint8_t pino) : _pino(pino), _estado(false) {}
+
+    // Inicializa o pino como saída e garante estado desligado
+    void inicializar() {
+        pinMode(_pino, OUTPUT);       // Configura como saída
+        digitalWrite(_pino, LOW);     // Começa desligado
+    }
+
+    // Liga o atuador (coloca HIGH no pino)
+    void ligar() {
+        if (!_estado) {               // Só escreve se mudou de estado
+            _estado = true;
+            digitalWrite(_pino, HIGH);
+        }
+    }
+
+    // Desliga o atuador (coloca LOW no pino)
+    void desligar() {
+        if (_estado) {                // Só escreve se mudou de estado
+            _estado = false;
+            digitalWrite(_pino, LOW);
+        }
+    }
+
+    // Define estado diretamente com booleano
+    void setEstado(bool ligar) {
+        ligar ? this->ligar() : desligar();
+    }
+
+    // Retorna o estado atual do atuador
+    bool getEstado() const { return _estado; }
+};
+
+// ============================================================
+//   INSTÂNCIAS DOS OBJETOS
+// ============================================================
+
+SensorUltrassonico sensorNivel(TRIG_PIN, ECHO_PIN); // Objeto do sensor HC-SR04
+SensorTemperatura  sensorTemp(POT_PIN);              // Objeto do potenciômetro
+
+Atuador valvulaEntrada(VALVULA_ENTRADA); // Eletroválvula de entrada de líquido
+Atuador valvulaSaida(VALVULA_SAIDA);     // Eletroválvula de saída de líquido
+Atuador aquecedor(AQUECEDOR);            // Elemento de aquecimento
+Atuador ledEntrada(LED_ENTRADA);         // LED indicador da válvula de entrada
+Atuador ledSaida(LED_SAIDA);             // LED indicador da válvula de saída
+Atuador ledAmarelo(LED_AMARELO);         // LED alarme nível baixo (20%)
+Atuador ledVermelho(LED_VERMELHO);       // LED alarme nível crítico (10%)
+
+// ============================================================
+//   FUNÇÕES DE CONTROLE
+// ============================================================
+
+// Controla a eletroválvula de entrada de líquido
+// Lógica: LOW = fechada, HIGH = aberta
+// Abre enquanto tanque não estiver cheio (< 95%)
+void controlarEntrada() {
+    const bool deveAbrir = (sistema.nivelPercent < 95.0f);
+    valvulaEntrada.setEstado(deveAbrir); // Atualiza válvula
+    ledEntrada.setEstado(deveAbrir);     // Atualiza LED indicador
+}
+
+// Controla a eletroválvula de saída de líquido
+// Condição obrigatória: nível > 40% E temperatura entre 25°C e 27°C
+void controlarSaida() {
+    const bool tempCorreta     = (sistema.tempAtual >= TEMP_OK_MIN &&
+                                  sistema.tempAtual <= TEMP_OK_MAX);
+    const bool nivelSuficiente = (sistema.nivelPercent > NIVEL_SAIDA_MIN);
+    const bool deveAbrir       = (tempCorreta && nivelSuficiente);
+
+    valvulaSaida.setEstado(deveAbrir); // Atualiza válvula
+    ledSaida.setEstado(deveAbrir);     // Atualiza LED indicador
+}
+
+// Controla o elemento de aquecimento
+// Botão B define o sinal lógico (HIGH = ligar, LOW = desligar)
+// Restrição: não liga se nível < 10%
+void controlarAquecedor() {
+    // Com INPUT_PULLUP: HIGH = botão solto (sinal para ligar)
+    //                   LOW  = botão pressionado (desligar)
+    const bool sinalLigado = (digitalRead(BOTAO_B) == HIGH);
+    const bool nivelOk     = (sistema.nivelPercent >= NIVEL_AQUECEDOR);
+
+    aquecedor.setEstado(sinalLigado && nivelOk);
+}
+
+// Controla os dois LEDs de alarme
+// Amarelo: pisca sempre que nível < 20%
+// Vermelho: liga quando nível < 10% e só desliga com botão A (via interrupção)
+void controlarAlarmes() {
+    // --- LED AMARELO ---
+    ledAmarelo.setEstado(sistema.nivelPercent < NIVEL_LED_AMARELO);
+
+    // --- LED VERMELHO ---
+    // Uma vez ativado, persiste até operador pressionar botão A
+    if (sistema.nivelPercent < NIVEL_LED_VERMELHO) {
+        sistema.alarmeVermelho = true; // Ativa e trava o alarme
+    }
+
+    // Verifica se interrupção do botão A foi disparada
+    if (flagBotaoA) {
+        flagBotaoA = false;             // Limpa flag da ISR
+        sistema.alarmeVermelho = false; // Desliga alarme
+        Serial.println(F("Alarme vermelho desligado pelo operador!"));
+    }
+
+    // Aplica estado atual no LED vermelho
+    ledVermelho.setEstado(sistema.alarmeVermelho);
+}
+
+// ============================================================
+//   SETUP - Executado uma única vez ao iniciar
+// ============================================================
+
+void setup() {
+    Serial.begin(9600); // Inicia comunicação serial para depuração
+
+    // Inicializa sensor ultrassônico (configura pinos TRIG e ECHO)
+    sensorNivel.inicializar();
+
+    // Inicializa botões com resistor pull-up interno
+    // Botão conectado entre pino e GND — pressionado = LOW
+    pinMode(BOTAO_A, INPUT_PULLUP);
+    pinMode(BOTAO_B, INPUT_PULLUP);
+
+    // Inicializa todos os atuadores (define como OUTPUT e desliga)
+    valvulaEntrada.inicializar();
+    valvulaSaida.inicializar();
+    aquecedor.inicializar();
+    ledEntrada.inicializar();
+    ledSaida.inicializar();
+    ledAmarelo.inicializar();
+    ledVermelho.inicializar();
+
+    // Registra a rotina de interrupção para o botão A
+    // FALLING = dispara na borda de descida (quando botão é pressionado)
+    attachInterrupt(digitalPinToInterrupt(BOTAO_A), ISR_botaoA, FALLING);
+
+    Serial.println(F("Sistema de controle de nivel iniciado!"));
+}
+
+// ============================================================
+//   LOOP PRINCIPAL - Executado continuamente
+// ============================================================
+
+void loop() {
+    const unsigned long agora = millis(); // Captura tempo atual em ms
+
+    // --- BLOCO 1: Leitura do sensor de nível (a cada 100ms) ---
+    // Usa millis() para não travar o programa com delay()
+    if (agora - sistema.tUltimoSensor >= INTERVALO_SENSOR) {
+        sistema.tUltimoSensor = agora; // Atualiza referência de tempo
+
+        const float distancia = sensorNivel.lerDistanciaCm();       // Mede distância
+        sistema.nivelPercent  = sensorNivel.calcularNivel(distancia); // Calcula nível
+
+        // Exibe no monitor serial para depuração
+        Serial.print(F("Distancia: "));
+        Serial.print(distancia, 1);        // 1 casa decimal
+        Serial.print(F(" cm | Nivel: "));
+        Serial.print(sistema.nivelPercent, 1);
+        Serial.println(F(" %"));
+    }
+
+    // --- BLOCO 2: Leitura da temperatura (a cada 200ms) ---
+    if (agora - sistema.tUltimaTemp >= INTERVALO_TEMP) {
+        sistema.tUltimaTemp = agora; // Atualiza referência de tempo
+
+        sistema.tempAtual = sensorTemp.lerTemperatura(); // Lê potenciômetro
+
+        Serial.print(F("Temperatura: "));
+        Serial.print(sistema.tempAtual, 1); // 1 casa decimal
+        Serial.println(F(" C"));
+    }
+
+    // --- BLOCO 3: Controles executados a cada ciclo do loop ---
+    // Rodam sempre (sem intervalo) para resposta imediata a mudanças
+    controlarEntrada();   // Atualiza válvula de entrada e LED
+    controlarSaida();     // Atualiza válvula de saída e LED
+    controlarAquecedor(); // Atualiza aquecedor conforme botão B e nível
+    controlarAlarmes();   // Atualiza LEDs amarelo e vermelho
+}
+```
+
+---
+
+**O que mudou para C++ puro:**
+
+| Recurso | Antes (C estilo) | Agora (C++) |
+|---|---|---|
+| Pinos | `#define` | `const uint8_t` |
+| Estado | variáveis soltas | `struct EstadoSistema` |
+| Sensor / Atuador | funções avulsas | **classes** com métodos |
+| Conversão de tipo | `map()` | cálculo com `static_cast<float>` |
+| Strings seriais | `"texto"` | `F("texto")` — salva RAM |
+| Tipos inteiros | `int` / `long` | `uint8_t` / `unsigned long` — tamanho explícito |
